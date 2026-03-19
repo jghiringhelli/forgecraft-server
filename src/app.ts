@@ -7,7 +7,7 @@ import { taxonomyRouter } from "./routes/taxonomy.js";
 
 export const app = new Hono();
 
-app.use("*", cors({ origin: ["https://genspec.dev", "http://localhost:3000"] }));
+app.use("*", cors({ origin: ["https://genspec.dev", "https://jghiringhelli.github.io", "http://localhost:3000"] }));
 app.use("*", logger());
 
 app.get("/health", (c) =>
