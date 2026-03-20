@@ -47,6 +47,7 @@ const ContributeGateSchema = z.object({
   gate: GateSchema,
   mode: z.enum(["anonymous", "attributed"]),
   attribution: AttributionSchema.optional(),
+  experimentId: z.string().optional(),
 });
 
 type ContributeGatePayload = z.infer<typeof ContributeGateSchema>;
@@ -62,7 +63,7 @@ contributeRouter.post(
     }
   }),
   async (c) => {
-    const { gate, mode, attribution } = c.req.valid("json") as ContributeGatePayload;
+    const { gate, mode, attribution, experimentId } = c.req.valid("json") as ContributeGatePayload;
 
     const githubToken = process.env.GITHUB_TOKEN;
     if (!githubToken) {
@@ -99,7 +100,7 @@ contributeRouter.post(
     // GitHub Issue is the primary durable record -- required, not best-effort
     let issueUrl: string;
     try {
-      issueUrl = await openGitHubIssue(entry, githubToken);
+      issueUrl = await openGitHubIssue(entry, githubToken, experimentId);
     } catch (err) {
       console.error("GitHub issue creation failed:", err);
       return c.json(
