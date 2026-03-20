@@ -18,6 +18,20 @@ export interface GateProposal {
   readonly likelihood?: string;
   readonly impact?: string;
   readonly confidence?: string;
+  /** Five community convergence attributes (GS White Paper §10.2) */
+  readonly convergenceAttributes?: ConvergenceAttributeCheck;
+}
+
+/**
+ * Self-assessment of a gate against the five community convergence attributes.
+ * All five must be true for the gate to pass flywheel admission.
+ */
+export interface ConvergenceAttributeCheck {
+  readonly prescriptive: boolean;
+  readonly agnostic: boolean;
+  readonly promptHealthy: boolean;
+  readonly deterministic: boolean;
+  readonly convergent: boolean;
 }
 
 /** Attribution info attached when mode is "attributed" */

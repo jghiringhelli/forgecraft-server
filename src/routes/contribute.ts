@@ -2,7 +2,19 @@ import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { apiKeyMiddleware } from "../middleware/api-key.js";
-import { writeGateToQuarantine, openGitHubIssue } from "../quarantine/service.js";
+import {
+  writeGateToQuarantine,
+  openGitHubIssue,
+  searchExistingGateIssues,
+} from "../quarantine/service.js";
+
+const ConvergenceAttributeSchema = z.object({
+  prescriptive: z.boolean(),
+  agnostic: z.boolean(),
+  promptHealthy: z.boolean(),
+  deterministic: z.boolean(),
+  convergent: z.boolean(),
+});
 
 const GateSchema = z.object({
   id: z.string().min(1),
@@ -23,6 +35,7 @@ const GateSchema = z.object({
   likelihood: z.string().optional(),
   impact: z.string().optional(),
   confidence: z.string().optional(),
+  convergenceAttributes: ConvergenceAttributeSchema.optional(),
 });
 
 const AttributionSchema = z.object({
@@ -59,6 +72,27 @@ contributeRouter.post(
       );
     }
 
+    // Deduplication: search before creating a new issue
+    let dedupResult;
+    try {
+      dedupResult = await searchExistingGateIssues(gate.id, gate.title, githubToken);
+    } catch {
+      // Dedup failure is non-fatal — proceed with creation
+      dedupResult = { suggestions: [] };
+    }
+
+    if (dedupResult.exactMatch) {
+      return c.json(
+        {
+          status: "duplicate",
+          message: "A gate with this ID already exists in the review queue.",
+          gateId: gate.id,
+          existingIssueUrl: dedupResult.exactMatch.issueUrl,
+        },
+        200
+      );
+    }
+
     // Write local audit cache first (best-effort, non-blocking)
     const entry = writeGateToQuarantine(gate, mode, attribution);
 
@@ -81,6 +115,13 @@ contributeRouter.post(
         gateId: gate.id,
         issueUrl,
         mode,
+        ...(dedupResult.suggestions.length > 0
+          ? {
+              similarGates: dedupResult.suggestions,
+              notice:
+                "Similar gates exist — reviewers will consider merging if substantially equivalent.",
+            }
+          : {}),
       },
       201
     );

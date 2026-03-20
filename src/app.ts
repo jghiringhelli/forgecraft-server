@@ -6,6 +6,9 @@ import { contributeRouter } from "./routes/contribute.js";
 import { taxonomyRouter } from "./routes/taxonomy.js";
 import { quarantineRouter } from "./routes/quarantine.js";
 import { countQuarantineEntries } from "./quarantine/service.js";
+import { loadConfiguredApiKeys } from "./middleware/api-key.js";
+
+const SERVER_VERSION = "0.2.0";
 
 export const app = new Hono();
 
@@ -15,9 +18,10 @@ app.use("*", logger());
 app.get("/health", (c) =>
   c.json({
     status: "ok",
-    version: "0.1.0",
+    version: SERVER_VERSION,
     timestamp: new Date().toISOString(),
     quarantineCount: countQuarantineEntries(),
+    configuredKeyCount: loadConfiguredApiKeys().size,
   })
 );
 
