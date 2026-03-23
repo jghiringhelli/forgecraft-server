@@ -1,4 +1,7 @@
 node_modules/
 dist/
 .env
-quarantine/
+/quarantine/
+!src/quarantine/
+
+/src/generated/prisma
