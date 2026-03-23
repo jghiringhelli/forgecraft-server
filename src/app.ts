@@ -14,7 +14,7 @@ const SERVER_VERSION = "0.2.0";
 
 export const app = new Hono();
 
-app.use("*", cors({ origin: ["https://genspec.dev", "https://forgecraft.tools", "https://jghiringhelli.github.io", "http://localhost:3000"] }));
+app.use("*", cors({ origin: ["https://genspec.dev", "https://forgecraft.tools", "https://forgecraft-web-production.up.railway.app", "https://jghiringhelli.github.io", "http://localhost:3000"] }));
 app.use("*", logger());
 
 app.get("/health", (c) =>
