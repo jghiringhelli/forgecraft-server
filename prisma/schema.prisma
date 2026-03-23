@@ -1,0 +1,48 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Tier {
+  FREE
+  PRO
+  TEAMS
+}
+
+model User {
+  id                   String         @id @default(cuid())
+  clerkId              String         @unique
+  email                String         @unique
+  tier                 Tier           @default(FREE)
+  stripeCustomerId     String?        @unique
+  stripeSubscriptionId String?        @unique
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  apiKey               ApiKey?
+  projectUsage         ProjectUsage[]
+}
+
+model ApiKey {
+  id        String    @id @default(cuid())
+  key       String    @unique
+  userId    String    @unique
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+}
+
+model ProjectUsage {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  month     String
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, month])
+}

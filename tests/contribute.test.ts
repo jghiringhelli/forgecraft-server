@@ -67,7 +67,7 @@ describe("POST /contribute/gate", () => {
     expect(res.status).toBe(401);
     const body = await res.json() as Record<string, unknown>;
     expect(typeof body.error).toBe("string");
-    expect(body.error as string).toContain("genspec.dev");
+    expect(body.error as string).toContain("forgecraft.tools");
   });
 
   it("rejects request with malformed API key with 401", async () => {

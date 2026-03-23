@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { getUserByApiKey } from "../modules/users/users.service.js";
 
 /** Valid forgecraft API key format: fg_ prefix followed by exactly 32 alphanumeric characters */
 const API_KEY_PATTERN = /^fg_[a-zA-Z0-9]{32}$/;
@@ -79,13 +80,12 @@ function hourBucketKey(apiKey: string): string {
 /**
  * Hono middleware that validates the X-Forgecraft-Key request header.
  *
- * Key validation:
- * - If FORGECRAFT_API_KEYS / FORGECRAFT_API_KEY env vars are set: membership check.
- * - Otherwise: format-only validation (/^fg_[a-zA-Z0-9]{32}$/) — MVP/open mode.
+ * When DATABASE_URL is set: looks up the key in the database (full auth).
+ * Otherwise falls back to env-var or format-only validation (MVP/dev mode).
  *
- * Rate limits:
- * - Standard keys: 20 submissions/month (free tier).
- * - Workshop keys (FORGECRAFT_WORKSHOP_KEYS or fg_ws prefix): 50 submissions/hour.
+ * Rate limiting for gate contributions (in-memory, non-project-slot operations):
+ * - Workshop keys: 50 submissions/hour.
+ * - Standard keys: 20 submissions/month.
  *
  * @param c - Hono context
  * @param next - Next middleware in chain
@@ -94,7 +94,18 @@ export async function apiKeyMiddleware(c: Context, next: Next): Promise<Response
   const apiKey = c.req.header("X-Forgecraft-Key");
 
   if (!apiKey) {
-    return c.json({ error: "Missing API key. Get yours at genspec.dev" }, 401);
+    return c.json({ error: "Missing API key. Get yours at forgecraft.tools" }, 401);
+  }
+
+  // DB-backed validation when database is configured
+  if (process.env.DATABASE_URL) {
+    const user = await getUserByApiKey(apiKey);
+    if (!user) {
+      return c.json({ error: "Invalid or revoked API key. Get yours at forgecraft.tools" }, 401);
+    }
+    c.set("user", user);
+    await next();
+    return;
   }
 
   const configuredKeys = loadConfiguredApiKeys();
@@ -102,10 +113,10 @@ export async function apiKeyMiddleware(c: Context, next: Next): Promise<Response
   // If explicit keys configured: membership check. Otherwise: format check.
   if (configuredKeys.size > 0) {
     if (!configuredKeys.has(apiKey)) {
-      return c.json({ error: "Invalid API key. Get yours at genspec.dev" }, 401);
+      return c.json({ error: "Invalid API key. Get yours at forgecraft.tools" }, 401);
     }
   } else if (!API_KEY_PATTERN.test(apiKey)) {
-    return c.json({ error: "Invalid API key format. Get yours at genspec.dev" }, 401);
+    return c.json({ error: "Invalid API key format. Get yours at forgecraft.tools" }, 401);
   }
 
   // Rate limiting: workshop keys use hourly bucket, standard keys use monthly
