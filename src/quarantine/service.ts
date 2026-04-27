@@ -61,7 +61,7 @@ export function countQuarantineEntries(): number {
   return readdirSync(dir).filter((f) => f.endsWith(".json")).length;
 }
 
-const QUALITY_GATES_REPO = "genspec-dev/quality-gates";
+const QUALITY_GATES_REPO = "jghiringhelli/quality-gates";
 
 /** Result of a deduplication search against existing GitHub Issues */
 export interface DuplicateSearchResult {

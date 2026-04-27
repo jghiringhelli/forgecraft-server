@@ -2,7 +2,7 @@ import { Hono } from "hono";
 
 const REGISTRY_URL =
   process.env.GATES_REGISTRY_URL ??
-  "https://raw.githubusercontent.com/genspec-dev/quality-gates/main/index.json";
+  "https://raw.githubusercontent.com/jghiringhelli/quality-gates/master/index.json";
 
 export const gatesRouter = new Hono();
 

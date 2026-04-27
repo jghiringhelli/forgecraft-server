@@ -18,7 +18,7 @@ function stubGitHubFetch(fetchSpy: MockInstance, issueNumber = 1): void {
     ok: true,
     json: async () => ({
       number: issueNumber,
-      html_url: `https://github.com/genspec-dev/quality-gates/issues/${issueNumber}`,
+      html_url: `https://github.com/jghiringhelli/quality-gates/issues/${issueNumber}`,
       title: "[Gate Proposal] Test Gate Title",
       created_at: new Date().toISOString(),
     }),
