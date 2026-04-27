@@ -1,0 +1,2054 @@
+{
+  "generatedAt": "2026-04-27T14:30:54.039Z",
+  "version": "1.0.0",
+  "tagCount": 24,
+  "tags": [
+    {
+      "tag": "ANALYTICS",
+      "instructionBlockCount": 1,
+      "instructionBlocks": [
+        {
+          "id": "analytics-architecture",
+          "tier": "recommended",
+          "title": "Analytics & Data Warehouse Standards"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "API",
+      "instructionBlockCount": 5,
+      "instructionBlocks": [
+        {
+          "id": "api-standards",
+          "tier": "recommended",
+          "title": "API Service Standards"
+        },
+        {
+          "id": "api-stack-constraints",
+          "tier": "core",
+          "title": "API Stack Constraints"
+        },
+        {
+          "id": "api-deployment",
+          "tier": "recommended",
+          "title": "API Deployment & Hosting"
+        },
+        {
+          "id": "api-testing",
+          "tier": "recommended",
+          "title": "API-Specific Testing Requirements"
+        },
+        {
+          "id": "api-smoke-testing",
+          "tier": "recommended",
+          "title": "API Smoke Testing (Post-Deploy)"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define the API Contract Before Code",
+          "rationale": "The OpenAPI spec is the source of truth. Types, validators, and tests must be generated from it — never maintained in parallel. A spec written before implementation is a contract; a spec written after implementation is documentation.\n",
+          "steps": [
+            {
+              "id": "write-openapi-spec",
+              "instruction": "Write the full OpenAPI 3.1 spec for every endpoint before implementation. Every endpoint must define: path, method, request schema (body + query + path params), all response codes with response schemas, and security requirements. Use $ref for shared schemas — no inline duplication.\n",
+              "contract": "openapi.yaml or openapi.json exists in the project root and passes `openapi-spec-validator`. Every endpoint in the spec maps 1:1 to a route in the implementation.\n",
+              "passCriterion": "openapi-spec-validator openapi.yaml exits 0",
+              "tools": [
+                "openapi-spec-validator",
+                "stoplight/spectral"
+              ]
+            },
+            {
+              "id": "generate-types-from-spec",
+              "instruction": "Generate TypeScript types from the OpenAPI spec using openapi-typescript. Use the generated types in route handlers and service layers — do not hand-write types that duplicate the spec.\n",
+              "contract": "src/types/api.ts (or equivalent) is generated, not hand-written. A Makefile or package.json script exists to regenerate it.\n",
+              "passCriterion": "File is generated; `npm run generate-types` succeeds",
+              "tools": [
+                "openapi-typescript",
+                "npx openapi-typescript openapi.yaml -o src/types/api.ts"
+              ]
+            },
+            {
+              "id": "write-hurl-spec",
+              "instruction": "Write a Hurl spec file for every endpoint. Each file covers: the happy path, at least one error case (400/401/403/404/422), and one edge case (e.g., empty list, max payload). Variables use Hurl's {{variable}} syntax for base_url, tokens, etc.\n",
+              "contract": "A .hurl file exists per endpoint group (auth, articles, users, etc.). Total Hurl files ≥ number of resource groups. Every Hurl file runs to completion without network errors.\n",
+              "passCriterion": "hurl --test *.hurl exits 0 with 0 failures",
+              "tools": [
+                "hurl --test",
+                "hurl --variables-file .env.test"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "execution",
+          "title": "Run Hurl Spec Against Live Server",
+          "rationale": "The gap between GS Verifiable and Executable is closed here. The server must be running with a test database. Hurl drives real HTTP — it catches route wiring gaps, JWT issues, and normalization bugs that no unit test can detect.\n",
+          "steps": [
+            {
+              "id": "start-server",
+              "instruction": "Start the API server with NODE_ENV=test and a clean test database. Sync the schema with `prisma db push --accept-data-loss` (not `migrate deploy` — migrate deploy silently no-ops when no migrations folder exists, leaving an empty DB). Capture the server process and its port in a test fixture.\n",
+              "contract": "Server health check endpoint returns HTTP 200 within 5 seconds. Test database has 0 seed rows (clean state).\n",
+              "passCriterion": "curl -s localhost:PORT/health returns 200",
+              "tools": [
+                "docker-compose up -d",
+                "npx prisma db push --accept-data-loss",
+                "curl /health"
+              ]
+            },
+            {
+              "id": "run-hurl-suite",
+              "instruction": "Run all Hurl files in sequence. Record: total files, total assertions, pass count, fail count. For every failure, capture: file name, step number, expected vs actual response body and status code.\n",
+              "contract": "≥ 80% of Hurl files pass. 100% of auth-related files pass. Zero 5xx responses on any happy-path request.\n",
+              "passCriterion": "Pass rate ≥ 80%; 0 failures in auth.hurl",
+              "tools": [
+                "hurl --test --report-junit junit-hurl.xml",
+                "hurl --variables-file .env.test"
+              ]
+            },
+            {
+              "id": "run-schema-validator",
+              "instruction": "For every response captured by the Hurl run, validate the response body against the OpenAPI spec's response schema. Use `openapi-backend` or `express-openapi-validator` in strict mode. Treat schema mismatches as failures even if Hurl assertions passed.\n",
+              "contract": "0 schema validation errors. Response shapes match spec exactly — no extra undocumented fields, no missing required fields.\n",
+              "passCriterion": "0 schema validation errors",
+              "tools": [
+                "openapi-backend",
+                "express-openapi-validator"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Record and Interpret Execution Results",
+          "rationale": "Hurl results feed directly into the Executable dimension score (0–2). Results must be structured so the verify loop can detect regressions across passes and determine whether the fix prompt improved things.\n",
+          "steps": [
+            {
+              "id": "record-hurl-results",
+              "instruction": "Save the JUnit XML report to test-results/hurl-junit.xml. Extract: total files count, pass count, fail count, failed file names. Write a one-line summary to test-results/hurl-summary.txt.\n",
+              "contract": "test-results/hurl-junit.xml and hurl-summary.txt exist after run",
+              "passCriterion": "Files exist; pass count parseable as integer",
+              "tools": [
+                "hurl --report-junit",
+                "xsltproc or python xml.etree"
+              ]
+            },
+            {
+              "id": "compute-executable-score",
+              "instruction": "Compute the Executable score: 0 if server fails to start, 1 if 1–79% of Hurl files pass, 2 if ≥ 80% of Hurl files pass. Record this score in test-results/executable-score.json with fields: score, pass_rate, total_files, passed_files, timestamp.\n",
+              "contract": "executable-score.json exists with integer score 0|1|2",
+              "passCriterion": "File parses as valid JSON with score field",
+              "tools": [
+                "node -e",
+                "python -c",
+                "jq"
+              ]
+            }
+          ]
+        }
+      ],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "CLI",
+      "instructionBlockCount": 1,
+      "instructionBlocks": [
+        {
+          "id": "cli-standards",
+          "tier": "recommended",
+          "title": "CLI Standards"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "DATA-LINEAGE",
+      "instructionBlockCount": 2,
+      "instructionBlocks": [
+        {
+          "id": "field-coverage",
+          "tier": "recommended",
+          "title": "100% Field Coverage Enforcement"
+        },
+        {
+          "id": "lineage-tracking-decorators",
+          "tier": "recommended",
+          "title": "Lineage Tracking Decorators & Annotations"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "DATA-PIPELINE",
+      "instructionBlockCount": 4,
+      "instructionBlocks": [
+        {
+          "id": "etl-patterns",
+          "tier": "recommended",
+          "title": "ETL & Pipeline Design"
+        },
+        {
+          "id": "data-validation",
+          "tier": "recommended",
+          "title": "Data Validation & Quality"
+        },
+        {
+          "id": "reliability-patterns",
+          "tier": "recommended",
+          "title": "Reliability & Error Handling"
+        },
+        {
+          "id": "data-pipeline-testing",
+          "tier": "recommended",
+          "title": "Data Pipeline Testing Requirements"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "FINTECH",
+      "instructionBlockCount": 4,
+      "instructionBlocks": [
+        {
+          "id": "transaction-integrity",
+          "tier": "recommended",
+          "title": "Transaction Integrity & Data Precision"
+        },
+        {
+          "id": "audit-compliance",
+          "tier": "recommended",
+          "title": "Audit Trails & Regulatory Compliance"
+        },
+        {
+          "id": "security-resilience",
+          "tier": "recommended",
+          "title": "Security & Operational Resilience"
+        },
+        {
+          "id": "simulation-invariants",
+          "tier": "recommended",
+          "title": "Financial Simulation & Backtesting Invariants"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define Statistical Contracts and Parameter Bounds",
+          "rationale": "A financial model contract is a statistical bound, not an exact output. \"VaR at 95% confidence ≤ 2.5% of portfolio\" is a valid contract. \"The model returns 0.031\" is not. Contracts must hold across market regimes, not just on the training period.\n",
+          "steps": [
+            {
+              "id": "define-statistical-invariants",
+              "instruction": "For each model output, define statistical contracts: - VaR (Value at Risk): max acceptable VaR at 95% and 99% confidence levels - CVaR (Conditional VaR / Expected Shortfall): max acceptable CVaR at 95% - Sharpe ratio: minimum acceptable Sharpe across rolling 90-day windows - Max drawdown: maximum acceptable peak-to-trough drawdown - Hit rate: for classification signals, minimum precision and recall Store in docs/statistical-contracts.md.\n",
+              "contract": "docs/statistical-contracts.md exists with one row per model output. Each row has: metric, confidence level, bound (max or min), measurement window.\n",
+              "passCriterion": "File exists with ≥1 statistical bound per model output",
+              "tools": [
+                "filesystem"
+              ]
+            },
+            {
+              "id": "define-parameter-search-space",
+              "instruction": "For each tunable hyperparameter, define: - Name (e.g., lookback_window, threshold_multiplier) - Type (int, float, categorical) - Valid range with hard bounds (e.g., lookback_window ∈ [5, 252] days) - Prior (e.g., uniform, log-uniform, normal around domain-expert estimate) - Forbidden regions (e.g., lookback_window < 5 causes lookahead bias) Store in docs/parameter-space.md.\n",
+              "contract": "docs/parameter-space.md exists with bounds and forbidden regions per parameter",
+              "passCriterion": "Every tunable parameter has hard bounds and a forbidden-regions note",
+              "tools": [
+                "filesystem"
+              ]
+            },
+            {
+              "id": "build-simulation-dataset",
+              "instruction": "Generate or load a statistically meaningful simulation dataset: - Minimum 1,000 trading days of price + volume data per instrument - Must include at least 3 distinct market regimes: trending, mean-reverting, high-volatility - Data must pass stationarity and regime-detection checks - Use real historical data or a calibrated GBM/Heston model with documented parameters Do NOT use synthetic uncalibrated random data — this produces misleading validation.\n",
+              "contract": "simulation-dataset.parquet or simulation-dataset.csv exists. Row count ≥ 1,000 per instrument. Regime labels column present. Stationarity check (ADF) passes. Volatility distribution is documented.\n",
+              "passCriterion": "Row count ≥ 1000; ADF p-value < 0.05 on returns series",
+              "tools": [
+                "pandas",
+                "numpy",
+                "yfinance",
+                "scipy.stats.adfuller",
+                "hmmlearn"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "simulation",
+          "title": "Monte Carlo Scenario Analysis Across Market Regimes",
+          "rationale": "A model that works on one market regime and fails on others is not production-grade. Monte Carlo across regimes closes stochastic uncertainty by constructing a confidence interval for every statistical contract across the full scenario space.\n",
+          "steps": [
+            {
+              "id": "run-monte-carlo-per-regime",
+              "instruction": "For each market regime in the simulation dataset, run 10,000 Monte Carlo iterations of the model. Each iteration uses a bootstrapped price path from that regime. Record the distribution of each model output (VaR, CVaR, Sharpe, etc.). Use multiprocessing — 10,000 iterations must complete in < 60 seconds.\n",
+              "contract": "Monte Carlo output exists per regime with ≥ 10,000 iterations. Runtime < 60 seconds on a 4-core machine.\n",
+              "passCriterion": "File exists per regime; n_iterations ≥ 10000",
+              "tools": [
+                "numpy.random.bootstrap",
+                "scipy.stats",
+                "multiprocessing",
+                "joblib"
+              ]
+            },
+            {
+              "id": "assert-statistical-contracts",
+              "instruction": "For each statistical contract in docs/statistical-contracts.md, assert it holds at the specified confidence level across all regimes: - VaR: p95 of the VaR distribution ≤ contracted bound - CVaR: same approach - Sharpe: p5 of the Sharpe distribution ≥ contracted bound Any contract that fails at p5/p95 is a FAIL — not just the mean.\n",
+              "contract": "All statistical contracts hold at the contracted confidence level across all regimes",
+              "passCriterion": "All result fields = PASS in contract-report.json",
+              "tools": [
+                "python scripts/assert-contracts.py",
+                "scipy.stats"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "hyperparameter-search",
+          "title": "Constrained Heuristic Search with Pruning and Warm Runs",
+          "rationale": "Hyperparameters cannot be derived analytically. They must be found by search. Random search without pruning wastes compute on clearly bad regions. Pruning eliminates unpromising trials early. Warm runs reuse the best checkpoint from a previous search run to avoid starting from scratch.\n",
+          "steps": [
+            {
+              "id": "warm-run-from-prior",
+              "instruction": "Before launching a full hyperparameter search, load the best parameters from the previous run (warm-run-checkpoint.json). If no checkpoint exists, use domain-expert priors from docs/parameter-space.md as the starting point. Run the model with the warm start and record its baseline performance.\n",
+              "contract": "warm-run-checkpoint.json contains the best parameters from the last search. Warm-start baseline performance is recorded before the new search begins.\n",
+              "passCriterion": "warm-run-baseline.json exists; sharpe > 0 (model is not trivially broken)",
+              "tools": [
+                "optuna",
+                "hyperopt",
+                "ray.tune",
+                "json"
+              ]
+            },
+            {
+              "id": "run-pruned-search",
+              "instruction": "Run a Bayesian hyperparameter search with early stopping (pruning): - Use Optuna with a MedianPruner or HyperbandPruner - Max 200 trials total; trials that fall below the 25th percentile of completed\n  trials' primary metric at the 25% epoch mark are pruned immediately\n- Search within the bounds defined in docs/parameter-space.md - Forbidden regions are enforced as hard constraints (trial returns -inf)\n",
+              "contract": "Search completes in ≤ 200 trials. Best trial improves on warm-run baseline. No forbidden-region parameter combinations appear in the top 10 trials.\n",
+              "passCriterion": "best_score > warm_run_baseline_score; no forbidden regions in top 10",
+              "tools": [
+                "optuna",
+                "optuna.pruners.HyperbandPruner",
+                "optuna.samplers.TPESampler"
+              ]
+            },
+            {
+              "id": "validate-best-params-out-of-sample",
+              "instruction": "Take the best parameters from the search and run them on a held-out out-of-sample dataset (a market period not present in the simulation dataset). The model must meet all statistical contracts on this out-of-sample data. In-sample performance that does not generalize is overfitting — report it as FAIL.\n",
+              "contract": "Out-of-sample dataset covers ≥ 252 trading days not in the training set. All statistical contracts hold on the out-of-sample data.\n",
+              "passCriterion": "all_contracts_pass = true in oos-validation.json",
+              "tools": [
+                "pandas",
+                "scripts/run-oos-validation.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "simulation-invariants",
+          "title": "Post-Run Simulation Invariants (Silent Bug Detection)",
+          "rationale": "Financial simulations fail in two directions, both silently. Category A (Silent Loss): strategy runs, earns nothing — unlinked accounting, stuck state machine. Category B (Silent Gain): inflated returns from accounting errors or look-ahead leaks. These 6 invariants run at finalize() and print alongside standard metrics.\n",
+          "steps": [
+            {
+              "id": "pnl-decomposition",
+              "instruction": "Assert: fee_income + price_income == total_pnl ± 1%. A gap > 1% means an accounting component is unlinked — it exists in the ledger but never flows into the reported total. Category A: Silent Loss Bug.\n",
+              "contract": "abs((fee_income + price_income) - total_pnl) / abs(total_pnl) < 0.01",
+              "passCriterion": "Ratio within 1% tolerance; printed in finalize output",
+              "tools": [
+                "simulation harness finalize()"
+              ]
+            },
+            {
+              "id": "fee-time-ratio",
+              "instruction": "Assert: total_fees / active_hours is above the minimum activity threshold. Near-zero fees after 1000h of 'running' = instrument was never created. The strategy ran against nothing. Category A: Silent Loss Bug.\n",
+              "contract": "total_fees / active_hours > min_fee_rate_per_hour (config)",
+              "passCriterion": "Fee rate above threshold; flagged as [INVARIANT FAIL] if below",
+              "tools": [
+                "simulation harness finalize()"
+              ]
+            },
+            {
+              "id": "state-concentration",
+              "instruction": "Assert: no single non-productive state consumes >80% of simulation time. A stuck state machine is not a conservative strategy — it is a broken one. Category A: Silent Loss Bug.\n",
+              "contract": "max(time_per_state[non_productive_states]) / total_time < 0.80",
+              "passCriterion": "All non-productive states below 80% time threshold",
+              "tools": [
+                "simulation harness finalize()"
+              ]
+            },
+            {
+              "id": "return-plausibility",
+              "instruction": "For a market-neutral strategy, assert: annual_return < 200% AND total_pnl / fee_income < 10×. Returns exceeding these bounds are almost certainly bugs, not alpha. Category B: Silent Gain Bug.\n",
+              "contract": "annualized_return < 2.0 AND total_pnl / fee_income < 10.0",
+              "passCriterion": "Both bounds satisfied; failing bound printed with actual values",
+              "tools": [
+                "simulation harness finalize()"
+              ]
+            },
+            {
+              "id": "delta-neutrality",
+              "instruction": "Assert: avg |net_delta| while in the primary running state is below the delta tolerance threshold (config). High delta = hedge broken or bootstrap bypassed. Category B: Silent Gain Bug — bootstrapping errors inflate returns mid-simulation.\n",
+              "contract": "mean(abs(net_delta) | state == primary_running_state) < delta_tolerance",
+              "passCriterion": "Average absolute delta below configured tolerance",
+              "tools": [
+                "simulation harness finalize()"
+              ]
+            },
+            {
+              "id": "instrument-balance",
+              "instruction": "Assert: max(instrument_notionals) / min(instrument_notionals) < 3×. If one sub-strategy is 5× larger than another at finalize, allocation logic failed. Category B: Silent Gain Bug — one instrument dominates and distorts aggregate returns.\n",
+              "contract": "max(instrument_notionals) / min(instrument_notionals) < 3.0",
+              "passCriterion": "Notional ratio below 3×; actual ratio printed regardless",
+              "tools": [
+                "simulation harness finalize()"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Persist Backtests, Param Checkpoints, and Contract Reports",
+          "rationale": "Financial model evidence is audit-critical. Regulators and risk teams require reproducible backtests with exact parameter sets and dataset provenance.\n",
+          "steps": [
+            {
+              "id": "commit-simulation-artifacts",
+              "instruction": "Commit to docs/backtests/: - contract-report.json (all statistical contract assertions) - oos-validation.json (out-of-sample results) - simulation-dataset metadata (NOT the full dataset if large — commit a hash and S3/GCS URI) - warm-run-checkpoint.json (best params for next run warm start) Include dataset SHA-256 hash in the commit message for reproducibility.\n",
+              "contract": "docs/backtests/ exists with contract-report.json and oos-validation.json",
+              "passCriterion": "Files present in docs/backtests/; contract-report parsed successfully",
+              "tools": [
+                "git",
+                "sha256sum"
+              ]
+            }
+          ]
+        }
+      ],
+      "hookCount": 1,
+      "hooks": [
+        {
+          "id": "pre-commit-vol-units.sh",
+          "trigger": "pre-commit"
+        }
+      ]
+    },
+    {
+      "tag": "GAME",
+      "instructionBlockCount": 9,
+      "instructionBlocks": [
+        {
+          "id": "game-loop-timing",
+          "tier": "recommended",
+          "title": "Game Loop & Frame Timing"
+        },
+        {
+          "id": "ecs-architecture",
+          "tier": "recommended",
+          "title": "Entity-Component-System Architecture"
+        },
+        {
+          "id": "asset-input-management",
+          "tier": "recommended",
+          "title": "Asset & Input Management"
+        },
+        {
+          "id": "phaser3-setup",
+          "tier": "recommended",
+          "title": "Phaser 3 Project Setup"
+        },
+        {
+          "id": "pixijs-setup",
+          "tier": "recommended",
+          "title": "PixiJS Project Setup"
+        },
+        {
+          "id": "threejs-webgl-setup",
+          "tier": "recommended",
+          "title": "Three.js / WebGL Setup"
+        },
+        {
+          "id": "web-game-performance",
+          "tier": "recommended",
+          "title": "Web Game Performance"
+        },
+        {
+          "id": "game-testing",
+          "tier": "recommended",
+          "title": "Game & Interactive Testing Patterns"
+        },
+        {
+          "id": "game-smoke-testing",
+          "tier": "recommended",
+          "title": "Game Smoke Testing (Three-Tier)"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define Balance Invariants and Art Acceptance Criteria",
+          "rationale": "Balance contracts are statistical bounds, not exact values. A contract states: \"TTK for equal-level combatants is between 8 and 14 seconds\" — not a specific number. Art contracts are visual: \"the idle animation has 4 frames, is 32x32px, and loops cleanly with no visible seam.\" Both must be written before simulation or generation begins.\n",
+          "steps": [
+            {
+              "id": "define-balance-invariants",
+              "instruction": "For each game system, define statistical invariants: - Time-to-kill (TTK): target range in seconds for equal-level match - Win rate variance: target σ for balanced competitive (typically σ < 5%) - Economy sink/source ratio: target range (typically 0.9–1.1 for stable economy) - Catch-up ceiling: max XP gap allowed between players at same session time Store in docs/balance-contracts.md as a table: System | Metric | Target | Acceptable Range.\n",
+              "contract": "docs/balance-contracts.md exists with ≥1 row per game system. Every row has a numeric target and acceptable range.\n",
+              "passCriterion": "File exists and passes grep for at least one numeric range",
+              "tools": [
+                "filesystem"
+              ]
+            },
+            {
+              "id": "define-art-acceptance-criteria",
+              "instruction": "For each asset type (character sprite, tile, UI element, animation), define: - Dimensions (e.g., 32x32px, 192x48px sprite sheet) - Frame count for animations - Palette constraints (max colors, transparency requirements) - Animation loop contract (first and last frame must be visually continuous) Store in docs/art-contracts.md.\n",
+              "contract": "docs/art-contracts.md exists with dimensions and frame count per asset type",
+              "passCriterion": "File exists with ≥1 row per asset type",
+              "tools": [
+                "filesystem"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "simulation",
+          "title": "Headless Balance Simulation",
+          "rationale": "Balance bugs are invisible to unit tests and playtesters until they manifest as dominant strategies. Headless simulation runs thousands of match iterations with scripted AI agents and reports whether invariants hold. It surfaces problems in minutes that playtesting would take months to detect.\n",
+          "steps": [
+            {
+              "id": "build-simulation-harness",
+              "instruction": "Build a headless simulation harness: a function `runSimulation(config, seed) → SimResult` that is deterministic given the same seed. No DOM, no renderer, no input system. For Unity/Godot: headless build + scripted test runner. For browser/Node: pure logic module. For Python: standalone module with no display imports. Verify determinism: assert runSimulation(config, 42) === runSimulation(config, 42).\n",
+              "contract": "runSimulation function exists and is importable/callable from test scripts. Determinism test: two calls with same seed produce identical SimResult objects.\n",
+              "passCriterion": "Determinism test passes; runSimulation callable from test script",
+              "tools": [
+                "node",
+                "python",
+                "unity-headless",
+                "godot --headless",
+                "jest"
+              ]
+            },
+            {
+              "id": "run-monte-carlo",
+              "instruction": "Run 10,000 simulations per balance scenario. Scenarios: 1. Equal-level PvP (player A vs player B, same level) 2. ±5 level advantage PvP (balance stress test) 3. Economy sink/source over 60-minute session For each scenario, record: distribution of outcomes, mean, σ, p5, p95.\n",
+              "contract": "10,000 iterations complete without error for each scenario. For equal-level PvP: win rate for each side is in [45%, 55%].\n",
+              "passCriterion": "win_rate_a ∈ [0.45, 0.55] for equal-level scenarios",
+              "tools": [
+                "node scripts/simulate.js --iterations 10000",
+                "python simulate.py --n 10000"
+              ]
+            },
+            {
+              "id": "assert-balance-invariants",
+              "instruction": "Compare simulation results against the balance contracts in docs/balance-contracts.md. For each invariant, report: PASS or FAIL with the actual value and the contracted range. Any FAIL becomes the input to the next fix iteration.\n",
+              "contract": "All balance invariants in docs/balance-contracts.md are PASS",
+              "passCriterion": "All result fields = PASS in invariant-report.json",
+              "tools": [
+                "node scripts/check-invariants.js",
+                "python check_invariants.py"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "art-generation",
+          "title": "Generative Art via MCP + Human Approval",
+          "rationale": "Aseprite is available as an MCP tool. The AI assembles sprites by: generating pixel art frames via prompt-to-pixel generation, importing into Aseprite via MCP, applying palette constraints, and exporting as PNG sprite sheets. Human approval is required before art assets are committed — this is irreducibly generative.\n",
+          "steps": [
+            {
+              "id": "generate-art-assets",
+              "instruction": "For each asset defined in docs/art-contracts.md, use the Aseprite MCP tool to: 1. Create a new sprite of the correct dimensions 2. Generate pixel art for each frame (use aseprite_new_frame for multi-frame assets) 3. Apply the palette constraint (aseprite_set_palette) 4. Export as PNG sprite sheet (aseprite_export) Name the output files as: assets/{type}/{name}.png and assets/{type}/{name}-sheet.png.\n",
+              "contract": "PNG file exists per asset at the correct path. File dimensions match the contract (use imagemagick identify or PIL). Frame count matches by dividing sheet width by frame width.\n",
+              "passCriterion": "File exists; dimensions match contract; frame count matches",
+              "tools": [
+                "aseprite MCP tool",
+                "aseprite_new_sprite",
+                "aseprite_export",
+                "imagemagick identify"
+              ]
+            },
+            {
+              "id": "assert-art-contracts",
+              "instruction": "For each generated asset, assert: 1. Dimensions: `identify -format '%wx%h' file.png` matches contract 2. Palette: `identify -format '%k' file.png` ≤ max colors in contract 3. Animation loop: first and last frame pixel hashes are compatible (no abrupt cut)\n",
+              "contract": "All dimension asserts pass. Palette constraint met. Loop continuity check passes (difference between last and first frame pixel arrays < 10% of total pixels).\n",
+              "passCriterion": "All result fields = PASS in art-validation.json",
+              "tools": [
+                "imagemagick identify",
+                "PIL/Pillow",
+                "python scripts/check-loop.py"
+              ]
+            },
+            {
+              "id": "human-approval",
+              "instruction": "Present each generated asset to the human for approval. For each asset: show the PNG, the contract spec, and the automated assertion results. The human approves or provides specific correction instructions (e.g., \"darken the shadow, add 1 frame for the landing pose\"). Record approval decisions in art-approvals.json.\n",
+              "contract": "All assets have human_approved: true in art-approvals.json",
+              "passCriterion": "All human_approved = true",
+              "tools": [
+                "filesystem",
+                "claude vision (for AI pre-screening before human review)"
+              ],
+              "requiresHumanReview": true
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Persist Simulation Results and Art Approvals",
+          "rationale": "Simulation results and art approvals are the ground truth for this domain. They must be committed alongside code so balance regressions are detectable across game patches.\n",
+          "steps": [
+            {
+              "id": "commit-simulation-artifacts",
+              "instruction": "Commit simulation-results.json and invariant-report.json to docs/balance/. Tag the commit with the game patch version. If any invariant is FAIL, fix the formula before committing.\n",
+              "contract": "docs/balance/simulation-results.json and invariant-report.json committed",
+              "passCriterion": "git show HEAD:docs/balance/invariant-report.json is valid JSON",
+              "tools": [
+                "git add docs/balance/",
+                "git commit"
+              ]
+            },
+            {
+              "id": "commit-approved-art",
+              "instruction": "Commit approved PNG assets to assets/sprites/ (or appropriate path). Include art-approvals.json with human sign-off records. Do not commit unapproved or placeholder assets as final production art.\n",
+              "contract": "All PNG files in assets/ have a corresponding approval entry in art-approvals.json",
+              "passCriterion": "art-approvals.json exists; all assets have human_approved: true",
+              "tools": [
+                "git add assets/",
+                "git commit"
+              ]
+            }
+          ]
+        }
+      ],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "HEALTHCARE",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "hipaa-compliance",
+          "tier": "recommended",
+          "title": "HIPAA Compliance & PHI Handling"
+        },
+        {
+          "id": "audit-logging",
+          "tier": "recommended",
+          "title": "Audit Logging & Access Tracking"
+        },
+        {
+          "id": "consent-management",
+          "tier": "recommended",
+          "title": "Consent & Data Governance"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "HIPAA",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "pii-masking",
+          "tier": "recommended",
+          "title": "PII Masking & Data Protection"
+        },
+        {
+          "id": "encryption-checks",
+          "tier": "recommended",
+          "title": "Encryption Verification & Key Management"
+        },
+        {
+          "id": "audit-logging-hipaa",
+          "tier": "recommended",
+          "title": "HIPAA Audit Logging"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "INFRA",
+      "instructionBlockCount": 5,
+      "instructionBlocks": [
+        {
+          "id": "iac-containers",
+          "tier": "recommended",
+          "title": "Infrastructure as Code & Containers"
+        },
+        {
+          "id": "cicd-pipelines",
+          "tier": "recommended",
+          "title": "CI/CD & Deployment Patterns"
+        },
+        {
+          "id": "observability-secrets",
+          "tier": "recommended",
+          "title": "Observability & Secrets Management"
+        },
+        {
+          "id": "iac-cdk-patterns",
+          "tier": "recommended",
+          "title": "CDK, Pulumi & IaC Patterns"
+        },
+        {
+          "id": "cloud-platform-guidance",
+          "tier": "recommended",
+          "title": "Cloud Platform & Deployment Targets"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "LIBRARY",
+      "instructionBlockCount": 1,
+      "instructionBlocks": [
+        {
+          "id": "library-standards",
+          "tier": "recommended",
+          "title": "Library Standards"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "MEDALLION-ARCHITECTURE",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "bronze-layer",
+          "tier": "recommended",
+          "title": "Bronze Layer — Immutable Raw Ingestion"
+        },
+        {
+          "id": "silver-layer",
+          "tier": "recommended",
+          "title": "Silver Layer — Validated & Conformed"
+        },
+        {
+          "id": "gold-layer",
+          "tier": "recommended",
+          "title": "Gold Layer — Aggregated & Business-Ready"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "ML",
+      "instructionBlockCount": 4,
+      "instructionBlocks": [
+        {
+          "id": "training-pipelines",
+          "tier": "recommended",
+          "title": "Model Training & Experiment Tracking"
+        },
+        {
+          "id": "feature-engineering",
+          "tier": "recommended",
+          "title": "Feature Engineering & Data Preparation"
+        },
+        {
+          "id": "model-deployment",
+          "tier": "recommended",
+          "title": "Model Versioning & Deployment"
+        },
+        {
+          "id": "ml-testing",
+          "tier": "recommended",
+          "title": "ML-Specific Testing Requirements"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define Model Quality Contracts and Search Bounds",
+          "rationale": "ML contracts are metric bounds achieved on a fixed test set. They distinguish a model that is \"good enough for production\" from one that merely overfit the validation set. Contracts must be defined before any training run begins.\n",
+          "steps": [
+            {
+              "id": "define-evaluation-metrics",
+              "instruction": "For the model's task, define: - Primary metric (e.g., F1@0.5, AUROC, RMSE, mAP@0.5) - Minimum acceptable threshold on the test set (e.g., F1 ≥ 0.85) - Maximum acceptable inference latency (e.g., p99 ≤ 50ms on CPU) - Maximum acceptable model size (e.g., ≤ 500MB on disk) Store in docs/ml-contracts.md.\n",
+              "contract": "docs/ml-contracts.md with numeric threshold per metric",
+              "passCriterion": "File exists; all thresholds are numeric with direction (≥ or ≤)",
+              "tools": [
+                "filesystem"
+              ]
+            },
+            {
+              "id": "fix-seeds-and-environment",
+              "instruction": "Fix all randomness sources: - Python: `random.seed(42); numpy.random.seed(42); torch.manual_seed(42)` - TensorFlow: `tf.random.set_seed(42)` - DataLoader: `worker_init_fn` + `generator=torch.Generator().manual_seed(42)` Record the full environment: Python version, framework versions, CUDA version, hardware (GPU model). Two runs with the same seed on the same hardware must produce bit-identical model checkpoints.\n",
+              "contract": "Determinism test: train for 3 epochs with seed=42, save checkpoint. Re-train for 3 epochs with seed=42. Checkpoints are identical (sha256 match).\n",
+              "passCriterion": "SHA-256 of both checkpoints match",
+              "tools": [
+                "torch.save",
+                "sha256sum",
+                "mlflow.log_artifact"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "hyperparameter-search",
+          "title": "Warm Runs + Pruned Search + Plateau Detection",
+          "rationale": "Naive grid search wastes GPU time. Bayesian search with pruning focuses on promising regions. Warm runs avoid rescheduling known-good configurations. Plateau detection terminates the search when additional trials stop improving the primary metric — preventing overfitting the validation set via trial count.\n",
+          "steps": [
+            {
+              "id": "warm-run-from-checkpoint",
+              "instruction": "Before launching the search, check for warm-run-checkpoint.json. If present, load the best hyperparameters from the previous search as the first trial of the new search. Compute baseline performance on the current validation set. Record to warm-run-baseline.json.\n",
+              "contract": "warm-run-baseline.json exists with primary_metric_value before new search",
+              "passCriterion": "File exists; primary_metric > 0 (model not trivially broken)",
+              "tools": [
+                "optuna",
+                "ray.tune",
+                "wandb",
+                "mlflow"
+              ]
+            },
+            {
+              "id": "run-pruned-bayesian-search",
+              "instruction": "Run a Bayesian hyperparameter search: - Sampler: TPE (Tree-structured Parzen Estimator) - Pruner: HyperbandPruner (prune unpromising trials at 25% epoch mark) - Max trials: min(200, budget); max wall-clock: configured via SEARCH_TIMEOUT_HOURS - Log all trial results to MLflow or W&B experiment tracking - Forbidden: learning_rate < 1e-6 or batch_size > GPU_VRAM / dtype_bytes\n",
+              "contract": "Search runs to configured budget or plateau. Trial logs present. No forbidden regions in top-10 trials.\n",
+              "passCriterion": "best_metric improves over warm-run-baseline or is within 1% (plateau)",
+              "tools": [
+                "optuna",
+                "optuna.integration.mlflow",
+                "ray.tune",
+                "wandb.sweep"
+              ]
+            },
+            {
+              "id": "detect-plateau",
+              "instruction": "After the search, check for plateau: - Compute the rolling best metric over the last 30 trials - If max improvement in the last 30 < 0.1% relative, the search has plateaued - Record plateau verdict in search-results.json as converged: true|false If converged=false after the trial budget, flag it — the search space or prior may be misconfigured. Escalate to human review.\n",
+              "contract": "search-results.json contains converged field. If converged=false, a human review note explains why additional trials are needed.\n",
+              "passCriterion": "converged field present; if false, requires_human_review escalation logged",
+              "tools": [
+                "pandas rolling max",
+                "numpy",
+                "optuna.study.best_trials"
+              ],
+              "requiresHumanReview": false
+            }
+          ]
+        },
+        {
+          "id": "evaluation",
+          "title": "Test Set Evaluation Against Quality Contracts",
+          "rationale": "Validation set performance is used to tune hyperparameters and is therefore optimistically biased. The test set is held out throughout the entire search. Only after the best model is selected is the test set evaluated once.\n",
+          "steps": [
+            {
+              "id": "evaluate-on-test-set",
+              "instruction": "Load the best checkpoint from the search. Run inference on the test set exactly once. Do NOT use test set results to re-tune — doing so invalidates the test set. Record all metrics contracted in docs/ml-contracts.md at inference time.\n",
+              "contract": "All primary and secondary metrics from docs/ml-contracts.md are recorded. Test evaluation runs exactly once (no multiple evaluation loops). Each metric meets its contracted threshold.\n",
+              "passCriterion": "All pass fields = true in test-evaluation.json",
+              "tools": [
+                "torch.no_grad()",
+                "sklearn.metrics",
+                "torchmetrics",
+                "mlflow.log_metrics"
+              ]
+            },
+            {
+              "id": "measure-inference-performance",
+              "instruction": "Benchmark inference latency on the target deployment hardware (CPU if deployed on CPU). Run 1,000 inference calls with the same input shape as production data. Record: mean, p50, p95, p99 latency. Record model size on disk.\n",
+              "contract": "p99 latency ≤ contracted max in docs/ml-contracts.md. Model size ≤ contracted max.\n",
+              "passCriterion": "p99_ms ≤ threshold; model_size_mb ≤ threshold",
+              "tools": [
+                "time.perf_counter",
+                "torch.autocast",
+                "ONNX Runtime",
+                "locust"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Persist Model Artifacts and Experiment Logs",
+          "rationale": "ML models without reproducibility artifacts are not production-grade. The exact checkpoint, the exact dataset split hash, and the exact code commit that produced them must be committed or referenced in the experiment tracker.\n",
+          "steps": [
+            {
+              "id": "persist-experiment-artifacts",
+              "instruction": "Log to MLflow / W&B: - best_params.json (hyperparameters) - test-evaluation.json (metric results) - latency-report.json - warm-run-checkpoint.json (updated with current best params for next run) - model checkpoint (via log_artifact) Tag the experiment run with the git commit SHA.\n",
+              "contract": "Experiment tracker run exists with all artifacts. Run is tagged with exact git commit SHA. warm-run-checkpoint.json is updated for next run.\n",
+              "passCriterion": "experiment-run.json exists; artifacts present in tracker",
+              "tools": [
+                "mlflow.log_artifact",
+                "wandb.log_artifact",
+                "git rev-parse HEAD"
+              ]
+            }
+          ]
+        }
+      ],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "MOBILE",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "responsive-offline",
+          "tier": "recommended",
+          "title": "Responsive Design & Offline-First"
+        },
+        {
+          "id": "push-lifecycle",
+          "tier": "recommended",
+          "title": "Push Notifications & App Lifecycle"
+        },
+        {
+          "id": "platform-performance",
+          "tier": "recommended",
+          "title": "Platform Patterns & Performance"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define Mobile Navigation Contracts",
+          "rationale": "Mobile UX contracts must account for both platforms (iOS + Android) and at minimum two viewport sizes (phone + tablet). Navigation paths must account for OS-level interruptions: permission dialogs, push notifications, app backgrounding.\n",
+          "steps": [
+            {
+              "id": "define-use-case-paths",
+              "instruction": "For each screen flow, define a numbered navigational path: 1. Starting screen and initial state 2. User gestures (tap, swipe, long-press, pinch) in order 3. Expected screen and visible elements after each gesture 4. Platform-specific branches (iOS vs Android where behavior diverges) 5. Terminal state (e.g., \"payment confirmation screen with order summary visible\") Store in docs/use-cases/{feature}-mobile.md.\n",
+              "contract": "docs/use-cases/ has *-mobile.md files. Each file documents iOS and Android paths separately where they diverge.\n",
+              "passCriterion": "File count in docs/use-cases/ matching *-mobile.md ≥ number of screen flows",
+              "tools": [
+                "filesystem"
+              ]
+            },
+            {
+              "id": "define-touch-target-contracts",
+              "instruction": "For every interactive element, define: - Minimum tap target size (Apple HIG: 44x44pt, Material: 48x48dp) - Minimum spacing between adjacent targets (Apple: 8pt, Material: 8dp) - Label text for accessibility (VoiceOver / TalkBack) Store in docs/mobile-accessibility-contracts.md.\n",
+              "contract": "docs/mobile-accessibility-contracts.md with ≥1 row per interactive element type",
+              "passCriterion": "File exists with tap target sizes and accessibility labels",
+              "tools": [
+                "filesystem"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "execution",
+          "title": "Run Automated Tests + Screenshot Assertions",
+          "rationale": "Playwright for RN Web or Appium for native drives real gestures on emulators. Screenshots at each step are asserted via Claude Vision against the contracts. Touch target sizes are measured programmatically — no manual measurement.\n",
+          "steps": [
+            {
+              "id": "run-navigation-tests",
+              "instruction": "Write and execute one test per use-case path. Use Playwright (RN Web) or Appium (native). Each test: 1. Launches the app in the correct initial state 2. Executes gestures in the contracted order 3. Takes a screenshot after each state transition 4. Asserts DOM/hierarchy elements visible at each step Run on iOS Simulator + Android Emulator.\n",
+              "contract": "Test files present per use case. All tests pass on both platforms. Screenshots saved per step in test-results/mobile/screenshots/.\n",
+              "passCriterion": "All tests pass on both platforms; 0 failing navigation assertions",
+              "tools": [
+                "npx playwright test",
+                "appium",
+                "xcrun simctl",
+                "emulator -avd"
+              ]
+            },
+            {
+              "id": "assert-screenshots-with-vision",
+              "instruction": "For each screenshot, call Claude Vision with: - The screenshot - The platform (iOS/Android) and viewport (phone/tablet) - The visual contract for that state - Prompt: \"Assert this mobile screenshot against the contract. List any FAILS. If all pass: PASS.\" Run on all platform + viewport combinations.\n",
+              "contract": "All vision assertions return PASS on both platforms and both viewports",
+              "passCriterion": "All result = PASS",
+              "tools": [
+                "claude --vision",
+                "anthropic vision API"
+              ],
+              "requiresHumanReview": true
+            },
+            {
+              "id": "measure-touch-targets",
+              "instruction": "Using the accessibility tree (iOS Accessibility Inspector or Android UIAutomator), retrieve the bounding rect of every interactive element. Assert that each element meets the tap target size in docs/mobile-accessibility-contracts.md.\n",
+              "contract": "All interactive elements meet minimum tap target size on both platforms",
+              "passCriterion": "All passes_contract = true",
+              "tools": [
+                "XCTest accessibilityFrame",
+                "UIAutomator getBounds",
+                "accessibility-inspector"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Persist Screenshots and Platform Test Reports",
+          "rationale": "Mobile screenshots are the only reliable evidence of cross-platform visual fidelity. They must be committed or archived per release so regressions are detectable.\n",
+          "steps": [
+            {
+              "id": "persist-screenshots",
+              "instruction": "Save one screenshot per step per platform to test-results/mobile/screenshots/{platform}/{test}/{step}.png. Compress to <500KB per screenshot. Include platform, OS version, and app version in filename.\n",
+              "contract": "Screenshots exist for all tests on all platforms",
+              "passCriterion": "Screenshot count matches steps × platforms",
+              "tools": [
+                "playwright screenshot",
+                "appium driver.saveScreenshot"
+              ]
+            },
+            {
+              "id": "persist-platform-reports",
+              "instruction": "Save the JUnit XML report from Playwright/Appium to test-results/mobile/. Save vision-results.json and touch-target-report.json to the same directory. Record platform and OS versions tested in test-results/mobile/environment.json.\n",
+              "contract": "test-results/mobile/ has report, vision-results, touch-target-report, environment",
+              "passCriterion": "Files exist and parse as valid JSON/XML",
+              "tools": [
+                "playwright --reporter=junit",
+                "appium --reporter"
+              ]
+            }
+          ]
+        }
+      ],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "OBSERVABILITY-XRAY",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "xray-lambda-instrumentation",
+          "tier": "recommended",
+          "title": "Auto-Add X-Ray Instrumentation to Lambdas"
+        },
+        {
+          "id": "xray-annotations-metadata",
+          "tier": "recommended",
+          "title": "X-Ray Annotations & Metadata Standards"
+        },
+        {
+          "id": "xray-alerting",
+          "tier": "optional",
+          "title": "X-Ray-Based Alerting & SLOs"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "REALTIME",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "websocket-patterns",
+          "tier": "recommended",
+          "title": "WebSocket & Connection Management"
+        },
+        {
+          "id": "event-driven-architecture",
+          "tier": "recommended",
+          "title": "Event-Driven Architecture"
+        },
+        {
+          "id": "backpressure-scaling",
+          "tier": "recommended",
+          "title": "Backpressure & Scaling"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "SOC2",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "access-control-validation",
+          "tier": "recommended",
+          "title": "Access Control Validation"
+        },
+        {
+          "id": "change-management",
+          "tier": "recommended",
+          "title": "Change Management & Audit Trail"
+        },
+        {
+          "id": "incident-response",
+          "tier": "recommended",
+          "title": "Incident Response Procedures"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "SOCIAL",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "ugc-moderation",
+          "tier": "recommended",
+          "title": "User-Generated Content & Moderation"
+        },
+        {
+          "id": "feeds-notifications",
+          "tier": "recommended",
+          "title": "Feeds & Notification Systems"
+        },
+        {
+          "id": "privacy-social-graph",
+          "tier": "recommended",
+          "title": "Privacy & Social Graph"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "STATE-MACHINE",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "state-transition-design",
+          "tier": "recommended",
+          "title": "State Transition Design"
+        },
+        {
+          "id": "guards-actions",
+          "tier": "recommended",
+          "title": "Guards, Actions & Side Effects"
+        },
+        {
+          "id": "hierarchical-parallel",
+          "tier": "recommended",
+          "title": "Hierarchical & Parallel States"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "UNIVERSAL",
+      "instructionBlockCount": 39,
+      "instructionBlocks": [
+        {
+          "id": "project-identity",
+          "tier": "core",
+          "title": "Project Identity"
+        },
+        {
+          "id": "code-standards",
+          "tier": "core",
+          "title": "Code Standards"
+        },
+        {
+          "id": "dev-environment-hygiene",
+          "tier": "core",
+          "title": "Dev Environment Hygiene"
+        },
+        {
+          "id": "dependency-registry",
+          "tier": "core",
+          "title": "Dependency Registry"
+        },
+        {
+          "id": "language-stack-constraints",
+          "tier": "core",
+          "title": "Language Stack Constraints"
+        },
+        {
+          "id": "production-code-standards",
+          "tier": "core",
+          "title": "Production Code Standards"
+        },
+        {
+          "id": "layered-architecture",
+          "tier": "recommended",
+          "title": "Layered Architecture"
+        },
+        {
+          "id": "clean-code-principles",
+          "tier": "recommended",
+          "title": "Clean Code Principles"
+        },
+        {
+          "id": "twelve-factor-ops",
+          "tier": "optional",
+          "title": "12-Factor & Operational Readiness"
+        },
+        {
+          "id": "cicd-deployment",
+          "tier": "recommended",
+          "title": "CI/CD & Deployment"
+        },
+        {
+          "id": "testing-pyramid",
+          "tier": "core",
+          "title": "Testing Pyramid"
+        },
+        {
+          "id": "tdd-methodology",
+          "tier": "core",
+          "title": "Test-Driven Development"
+        },
+        {
+          "id": "tdd-enforcement",
+          "tier": "core",
+          "title": "TDD Enforcement — Forbidden Patterns and Gate Protocol"
+        },
+        {
+          "id": "adversarial-testing",
+          "tier": "core",
+          "title": "Adversarial Testing Posture"
+        },
+        {
+          "id": "property-based-testing",
+          "tier": "recommended",
+          "title": "Property-Based Testing"
+        },
+        {
+          "id": "spec-meta-query",
+          "tier": "recommended",
+          "title": "Specification Completeness Meta-Query"
+        },
+        {
+          "id": "data-guardrails",
+          "tier": "core",
+          "title": "Data Guardrails"
+        },
+        {
+          "id": "commit-protocol",
+          "tier": "core",
+          "title": "Commit Protocol"
+        },
+        {
+          "id": "clarification-protocol",
+          "tier": "core",
+          "title": "Clarification Protocol"
+        },
+        {
+          "id": "feature-completion-protocol",
+          "tier": "recommended",
+          "title": "Feature Completion Protocol"
+        },
+        {
+          "id": "mcp-tooling",
+          "tier": "recommended",
+          "title": "MCP-Powered Tooling"
+        },
+        {
+          "id": "engineering-preferences",
+          "tier": "recommended",
+          "title": "Engineering Preferences"
+        },
+        {
+          "id": "agent-mechanics",
+          "tier": "core",
+          "title": "Agent Mechanical Constraints"
+        },
+        {
+          "id": "code-generation-verification",
+          "tier": "core",
+          "title": "Code Generation — Self-Verify Loop"
+        },
+        {
+          "id": "known-pitfalls",
+          "tier": "core",
+          "title": "Known Pitfalls"
+        },
+        {
+          "id": "corrections-log",
+          "tier": "core",
+          "title": "Corrections Log"
+        },
+        {
+          "id": "techniques-registry",
+          "tier": "core",
+          "title": "Techniques"
+        },
+        {
+          "id": "test-taxonomy",
+          "tier": "recommended",
+          "title": "Test Taxonomy"
+        },
+        {
+          "id": "release-phase-gate",
+          "tier": "core",
+          "title": "Active Release Phase Gate"
+        },
+        {
+          "id": "gs-test-techniques",
+          "tier": "recommended",
+          "title": "Generative Specification — Testing Techniques"
+        },
+        {
+          "id": "artifact-grammar",
+          "tier": "core",
+          "title": "Artifact Grammar"
+        },
+        {
+          "id": "naming-as-grammar",
+          "tier": "core",
+          "title": "Names Are Production Rules"
+        },
+        {
+          "id": "adr-protocol",
+          "tier": "core",
+          "title": "ADR Protocol"
+        },
+        {
+          "id": "use-case-triple-derivation",
+          "tier": "recommended",
+          "title": "Use Case Triple Derivation"
+        },
+        {
+          "id": "living-documentation",
+          "tier": "recommended",
+          "title": "Living Documentation"
+        },
+        {
+          "id": "agentic-self-refinement",
+          "tier": "recommended",
+          "title": "Agentic Self-Refinement"
+        },
+        {
+          "id": "wrong-specification-risk",
+          "tier": "recommended",
+          "title": "Wrong Specification Risk"
+        },
+        {
+          "id": "gs-five-memory-types",
+          "tier": "core",
+          "title": "GS — Five Memory Types"
+        },
+        {
+          "id": "gs-status-format",
+          "tier": "core",
+          "title": "GS — Status.md Format"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define Contracts Before Code",
+          "rationale": "Every function, module boundary, and API surface must have a machine-checkable contract before implementation begins. This transforms implicit intent into explicit invariants the verify loop can check automatically.\n",
+          "steps": [
+            {
+              "id": "define-type-contracts",
+              "instruction": "For every public function and class, define TypeScript types or Python type annotations for all parameters and return values. No `any`, no untyped function signatures. Run `tsc --noEmit` or `mypy` before proceeding.\n",
+              "contract": "Zero type errors reported by the compiler. Every exported function has explicit parameter and return types.\n",
+              "passCriterion": "tsc --noEmit exits 0",
+              "tools": [
+                "tsc --noEmit",
+                "mypy --strict"
+              ]
+            },
+            {
+              "id": "define-schema-contracts",
+              "instruction": "For every external interface (HTTP request/response, config file, event payload, CLI flags), define a Zod schema (TypeScript) or Pydantic model (Python) colocated with the module that owns it. The schema must be the single source of truth — types must be derived from it, not maintained separately.\n",
+              "contract": "All external interfaces have a named Zod schema or Pydantic model that is used at the entry point and is importable by tests.\n",
+              "passCriterion": "grep -r 'z.object\\|z.string\\|BaseModel' src/ returns ≥1 result per external interface\n",
+              "tools": [
+                "zod",
+                "pydantic"
+              ]
+            },
+            {
+              "id": "define-error-contracts",
+              "instruction": "For every module, define a custom error class that carries: message, operation name, and a timestamp. No bare `throw new Error(...)` in business logic. In tests, assert on the specific error class, not just the message string.\n",
+              "contract": "Every module directory has an errors file. No bare `new Error()` in business logic files (src/ excluding test files).\n",
+              "passCriterion": "grep -r 'throw new Error' src --include='*.ts' --exclude='*.test.ts' returns 0 matches",
+              "tools": [
+                "grep",
+                "eslint"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "execution",
+          "title": "Run Type Checker + Unit Tests",
+          "rationale": "Contracts defined above are verified by automated tooling. This is the deterministic verify loop — no human judgment needed at this phase.\n",
+          "steps": [
+            {
+              "id": "run-type-check",
+              "instruction": "Run the type checker in strict mode. Treat warnings as errors. All type errors must be resolved before running tests.\n",
+              "contract": "Zero compiler errors in strict mode",
+              "passCriterion": "tsc --noEmit exits 0",
+              "tools": [
+                "tsc --noEmit --strict",
+                "mypy --strict"
+              ]
+            },
+            {
+              "id": "run-unit-tests",
+              "instruction": "Run the full test suite. All tests must pass. Coverage must meet the project's coverage gate (≥80% line coverage overall, ≥90% on changed files).\n",
+              "contract": "All tests pass; coverage gate met",
+              "passCriterion": "Exit code 0; coverage ≥ 80% overall",
+              "tools": [
+                "jest --runInBand --coverage",
+                "pytest --cov"
+              ]
+            },
+            {
+              "id": "owasp-l1-static",
+              "instruction": "Run static security analysis as part of the development loop. OWASP ASVS Level 1 checks that run at commit time: (1) Secrets detection — no credentials, tokens, or keys in source (pre-commit-secrets hook) (2) Dependency audit — no HIGH/CRITICAL CVEs in direct dependencies (audit command from forgecraft.yaml tools.audit) (3) Injection pattern scan — grep for string-concatenated SQL, shell exec with user input, eval() patterns (4) Hardcoded config scan — no URLs, IPs, ports, credentials in non-config files These run automatically via pre-commit hooks (see .claude/hooks/). No manual action required unless a finding is reported.\n",
+              "contract": "Zero secrets detected. Zero HIGH/CRITICAL CVEs in dependencies. Zero string-concatenated SQL queries. Zero eval() with dynamic input.\n",
+              "passCriterion": "All pre-commit hooks exit 0 on staged files",
+              "tools": [
+                "pre-commit-secrets.sh",
+                "forgecraft.yaml tools.audit",
+                "pre-commit-prod-quality.sh"
+              ],
+              "owasp_asvs_level": 1
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Persist and Interpret Results",
+          "rationale": "Verification evidence must be persisted as artifacts so the verify loop can compare pass/fail state across iterations. Without persisted evidence, regressions go undetected.\n",
+          "steps": [
+            {
+              "id": "persist-coverage-report",
+              "instruction": "Save the coverage report to coverage/ in the project root. If CI is configured, upload as a build artifact. Record the overall line coverage percentage in the session log.\n",
+              "contract": "coverage/lcov.info or coverage/coverage.json exists after test run",
+              "passCriterion": "coverage/ directory non-empty after test run",
+              "tools": [
+                "jest --coverage",
+                "pytest-cov",
+                "lcov"
+              ]
+            },
+            {
+              "id": "record-type-error-count",
+              "instruction": "Record the number of type errors before and after each verify loop pass. If the count does not decrease across passes, the fix prompt is not effective — escalate to human review.\n",
+              "contract": "Type error count is 0 at end of final pass",
+              "passCriterion": "Error count = 0",
+              "tools": [
+                "tsc --noEmit 2>&1 | grep 'error TS'"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "pre-release-hardening",
+          "title": "Pre-Release Hardening Gates",
+          "rationale": "Before promoting to pre-release (beta/RC-candidate), the implementation must survive adversarial conditions it will encounter in production: mutant code that slips through tests, external attack vectors, load spikes, and infrastructure failures. These gates are advisory during development but blocking at release_phase = pre-release.\n",
+          "release_phase_gate": "pre-release",
+          "steps": [
+            {
+              "id": "mutation-testing",
+              "instruction": "Run mutation testing on changed files using Stryker (JS/TS) or mutmut (Python). Mutation score on changed files must be ≥ 80%. A low mutation score means tests pass but do not actually catch logic errors — the test suite is checking the wrong things. Configuration: stryker.config.json or .stryker.conf.json at project root. Target only files modified in this release branch to keep runtime reasonable. If forgecraft.yaml has tools.mutation configured, run that command directly. The pre-commit hook will check mutation score if the tool is configured.\n",
+              "contract": "Mutation score ≥ 80% on changed files. Stryker/mutmut exits with surviving-mutant count below the 20% threshold for changed lines.\n",
+              "passCriterion": "Mutation score on changed files ≥ 80%",
+              "tools": [
+                "stryker run",
+                "mutmut run && mutmut results"
+              ],
+              "requiresHumanReview": true
+            },
+            {
+              "id": "dast-scan",
+              "instruction": "Run OWASP ZAP dynamic analysis against a running instance of the service. Use the baseline scan for APIs: `docker run -t owasp/zap2docker-stable zap-api-scan.py -t <openapi-spec-url> -f openapi`. All HIGH severity findings must be resolved before pre-release. MEDIUM findings must be triaged (accepted with documented rationale or fixed).\n",
+              "contract": "Zero HIGH severity findings from ZAP API scan. Every MEDIUM finding has a documented disposition (fixed or accepted with ADR).\n",
+              "passCriterion": "Zero HIGH findings; all MEDIUM findings triaged",
+              "tools": [
+                "owasp/zap2docker-stable",
+                "zap-api-scan.py",
+                "zap-baseline.py"
+              ],
+              "owasp_asvs_level": 2,
+              "requiresHumanReview": true
+            },
+            {
+              "id": "load-test",
+              "instruction": "Run a load test at 2× peak expected traffic using k6, Locust, or Artillery. Peak is defined as the highest observed or projected request rate in the production traffic model. Test duration: minimum 10 minutes. Accept criteria: p95 latency ≤ SLA threshold; error rate < 1%.\n",
+              "contract": "Under 2× peak load: p95 response time ≤ SLA; error rate < 1%; no memory leak detected (heap stable across test duration).\n",
+              "passCriterion": "p95 ≤ SLA; error rate < 1% sustained over test duration",
+              "tools": [
+                "k6 run",
+                "locust",
+                "artillery run"
+              ],
+              "requiresHumanReview": true
+            },
+            {
+              "id": "chaos-resilience",
+              "instruction": "Inject one network failure and one dependency failure using Toxiproxy, Chaos Monkey, or AWS Fault Injection Simulator. The service must degrade gracefully: return 503 with Retry-After header (not 500 or silent hang) when a downstream is unavailable. Recovery time from injected failure must be ≤ 30 seconds.\n",
+              "contract": "Service returns structured error response (not 500) when dependency fails. Recovers automatically within 30 seconds of dependency restoration. No data corruption or stuck transactions during failure window.\n",
+              "passCriterion": "Graceful degradation confirmed; recovery time ≤ 30s",
+              "tools": [
+                "toxiproxy-cli",
+                "chaos-monkey",
+                "aws fis"
+              ],
+              "requiresHumanReview": true
+            }
+          ]
+        },
+        {
+          "id": "release-candidate",
+          "title": "Release Candidate Gates",
+          "rationale": "The release candidate is the last checkpoint before production. It must pass security penetration testing, accessibility audit (if UI), full compatibility matrix validation, and mutation testing at the overall (not just changed-files) threshold. Human sign-off is required on all findings.\n",
+          "release_phase_gate": "release-candidate",
+          "steps": [
+            {
+              "id": "penetration-testing",
+              "instruction": "Perform OWASP Top 10 penetration testing. At minimum cover: injection (SQL, command, LDAP), broken authentication (session fixation, token leakage, brute-force), sensitive data exposure (TLS config, response headers, error messages), broken access control (BOLA/IDOR, privilege escalation, JWT algorithm confusion), security misconfiguration (default creds, verbose errors), and XXE/XSS if a UI is present. Use OWASP ZAP active scan + manual testing for BOLA/IDOR.\n",
+              "contract": "Zero Critical or High CVSS ≥ 7.0 findings unresolved. All Medium findings (CVSS 4.0–6.9) have documented disposition. OWASP Top 10 categories fully covered in test plan.\n",
+              "passCriterion": "Zero unresolved High/Critical; all Medium triaged with ADR or fix",
+              "tools": [
+                "owasp/zap2docker-stable",
+                "burpsuite",
+                "sqlmap",
+                "nikto"
+              ],
+              "owasp_asvs_level": 3,
+              "requiresHumanReview": true
+            },
+            {
+              "id": "mutation-testing-full",
+              "instruction": "Run mutation testing against the full codebase (not just changed files). Overall mutation score must be ≥ 80%. This validates that the entire test suite is specification-grade, not just the code touched in this release.\n",
+              "contract": "Overall mutation score ≥ 80% across full codebase",
+              "passCriterion": "Overall mutation score ≥ 80%",
+              "tools": [
+                "stryker run --all-files",
+                "mutmut run"
+              ],
+              "requiresHumanReview": false
+            },
+            {
+              "id": "compatibility-matrix",
+              "instruction": "Validate the software against all supported runtime versions specified in package.json engines field (Node.js), pyproject.toml (Python), or equivalent. Run the full test suite against each supported major version. If a database is used, validate against all supported DB major versions.\n",
+              "contract": "Full test suite passes on every supported runtime version in the declared compatibility matrix. Zero version-specific failures unreported.\n",
+              "passCriterion": "All tests pass on all declared runtime versions",
+              "tools": [
+                "nvm use",
+                "pyenv",
+                "matrix CI strategy"
+              ],
+              "requiresHumanReview": false
+            },
+            {
+              "id": "accessibility-audit",
+              "instruction": "If the project has a user interface: run axe-core or Lighthouse accessibility audit against all primary user journeys. WCAG 2.1 AA compliance required. If no UI, mark this step as N/A with justification.\n",
+              "contract": "Zero WCAG 2.1 AA violations on primary user journeys, or step marked N/A with justification",
+              "passCriterion": "Zero critical/serious axe violations; Lighthouse accessibility score ≥ 90",
+              "tools": [
+                "axe-core",
+                "lighthouse --only-categories=accessibility",
+                "pa11y"
+              ],
+              "requiresHumanReview": true
+            }
+          ]
+        },
+        {
+          "id": "deployment-gates",
+          "title": "Deployment Readiness Gates",
+          "rationale": "Before production deployment, the operational configuration must be validated: canary or rolling deploy is configured, rollback threshold is defined and tested, smoke tests cover the critical path, and observability is confirmed active. These gates prevent deploying code that cannot be safely rolled back.\n",
+          "release_phase_gate": "production",
+          "steps": [
+            {
+              "id": "canary-config",
+              "instruction": "Confirm deployment strategy is configured (canary, blue-green, or rolling). For canary: define the traffic split percentage and success threshold before promoting to 100%. For rolling: define the max-surge and max-unavailable settings. Document the rollback trigger condition (error rate threshold, latency threshold, or health check failure count).\n",
+              "contract": "Deployment strategy config present (k8s deployment, railway.json, fly.toml, ECS service, or equivalent). Rollback trigger threshold documented in runbook or infra config.\n",
+              "passCriterion": "Deploy config present; rollback threshold defined and reachable in runbook",
+              "tools": [
+                "kubectl",
+                "fly",
+                "railway",
+                "aws ecs"
+              ],
+              "requiresHumanReview": true
+            },
+            {
+              "id": "smoke-tests",
+              "instruction": "Define and run smoke tests covering the top 3–5 critical user journeys. Smoke tests must be runnable against a live environment in < 60 seconds. For web UIs: use Playwright — navigate to the live URL, wait for async data to load, take a full-page screenshot, assert critical elements are present and non-empty. Playwright catches rendering bugs, broken async fetches, blank pages, and layout collapses that API-only tests miss entirely. For APIs: use Hurl or Newman for machine-readable output. These same tests run automatically post-deploy.\n",
+              "contract": "Smoke test suite exists, runs in < 60 seconds, covers the critical path. Web UIs: Playwright script with element assertions + screenshot artifact. APIs: Hurl/Newman with status code + response schema assertions. All smoke tests pass against staging before deploy to production.\n",
+              "passCriterion": "All checks pass; screenshot confirms page renders correctly; total duration < 60s",
+              "tools": [
+                "playwright",
+                "newman run",
+                "hurl",
+                "k6 run --vus 1"
+              ],
+              "requiresHumanReview": false
+            },
+            {
+              "id": "observability-verified",
+              "instruction": "Confirm that structured logging, metrics, and alerting are active in the target environment. Required: log aggregation (Datadog, Splunk, CloudWatch, or equivalent), error rate alert (fires within 5 minutes of >1% error rate), and latency alert (fires within 5 minutes of p95 > SLA). Run a synthetic error and confirm the alert fires.\n",
+              "contract": "Log aggregation active; error rate alert configured and tested; latency alert configured and tested. Alert runbook linked in deploy notes.\n",
+              "passCriterion": "Synthetic error triggers alert within 5 minutes",
+              "tools": [
+                "datadog",
+                "cloudwatch",
+                "grafana",
+                "pagerduty"
+              ],
+              "requiresHumanReview": true
+            }
+          ]
+        },
+        {
+          "id": "post-deployment",
+          "title": "Post-Deployment Health Verification",
+          "rationale": "After production deployment, synthetic probes and observability must confirm that the new version is serving traffic correctly. The deployment is not complete until post-deployment verification passes. If it fails, rollback is the default response — not patching in production.\n",
+          "release_phase_gate": "production",
+          "steps": [
+            {
+              "id": "synthetic-health-probes",
+              "instruction": "Run the smoke test suite against the production environment within 5 minutes of deploy completion. For web UIs: Playwright navigates to the live URL, waits for async data, asserts critical elements, and saves a screenshot. The screenshot is the proof artifact — view it after every deploy. If any check fails, trigger rollback immediately.\n",
+              "contract": "All smoke tests pass against production within 5 minutes of deployment. Web UIs: screenshot artifact saved and reviewed. API: response schema valid. Rollback is initiated automatically or within 10 minutes if any smoke test fails.\n",
+              "passCriterion": "All smoke tests pass against production; timestamp within 5 min of deploy",
+              "tools": [
+                "newman run",
+                "hurl",
+                "k6 run --vus 1"
+              ],
+              "requiresHumanReview": false
+            },
+            {
+              "id": "error-rate-monitoring",
+              "instruction": "Monitor the error rate for 30 minutes after deployment. Error rate must stay below the rollback threshold. Compare p95 latency against pre-deploy baseline (from load test results). If error rate spikes above threshold or latency degrades > 20% vs baseline, initiate rollback.\n",
+              "contract": "Error rate stays below rollback threshold for 30 minutes post-deploy. p95 latency does not degrade > 20% vs pre-deploy baseline.\n",
+              "passCriterion": "Error rate below threshold; latency within 20% of baseline for 30 min",
+              "tools": [
+                "datadog",
+                "cloudwatch",
+                "grafana"
+              ],
+              "requiresHumanReview": true
+            },
+            {
+              "id": "incident-runbook-verified",
+              "instruction": "Confirm that the incident runbook for this service is current and accessible. The runbook must cover: how to roll back this version, how to escalate, how to check the canary status, and how to interpret the health dashboard. Have one team member who was not involved in the deployment review and confirm the runbook is complete.\n",
+              "contract": "Incident runbook exists at docs/runbooks/<service>.md or equivalent. Runbook covers rollback, escalation, canary status, and dashboard links. Independent review confirmed by a second team member.\n",
+              "passCriterion": "Runbook current; independent reviewer confirms completeness",
+              "tools": [
+                "docs/runbooks/"
+              ],
+              "requiresHumanReview": true
+            }
+          ]
+        }
+      ],
+      "hookCount": 14,
+      "hooks": [
+        {
+          "id": "commit-msg.sh",
+          "trigger": "commit-msg"
+        },
+        {
+          "id": "pre-commit-branch-check.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-exec-safety.sh",
+          "trigger": "pre-exec"
+        },
+        {
+          "id": "pre-commit-format.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-secrets.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-compile.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-clippy.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-tdd-check.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-test.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-coverage.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-prod-quality.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-function-length.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-import-cycles.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-review.sh",
+          "trigger": "pre-commit"
+        }
+      ]
+    },
+    {
+      "tag": "WEB-REACT",
+      "instructionBlockCount": 10,
+      "instructionBlocks": [
+        {
+          "id": "react-component-architecture",
+          "tier": "recommended",
+          "title": "React Component Architecture"
+        },
+        {
+          "id": "react-state-management",
+          "tier": "recommended",
+          "title": "State Management"
+        },
+        {
+          "id": "react-i18n",
+          "tier": "recommended",
+          "title": "Internationalization (i18n)"
+        },
+        {
+          "id": "react-forms",
+          "tier": "recommended",
+          "title": "Forms"
+        },
+        {
+          "id": "react-api-integration",
+          "tier": "recommended",
+          "title": "API Integration"
+        },
+        {
+          "id": "react-accessibility",
+          "tier": "recommended",
+          "title": "Accessibility (a11y)"
+        },
+        {
+          "id": "react-error-boundaries",
+          "tier": "recommended",
+          "title": "Error Handling & Suspense"
+        },
+        {
+          "id": "react-deployment",
+          "tier": "recommended",
+          "title": "React Deployment & Hosting"
+        },
+        {
+          "id": "web-react-testing",
+          "tier": "recommended",
+          "title": "React-Specific Testing Patterns"
+        },
+        {
+          "id": "web-react-smoke-testing",
+          "tier": "recommended",
+          "title": "React App Smoke Testing (Post-Deploy)"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define Navigation Contracts and Visual Expectations",
+          "rationale": "A behavioral contract is a precise description of: which URL renders which component, which user actions trigger which state transitions, and what the page looks like at each checkpoint. Without explicit contracts, visual regressions and interaction bugs are invisible to the automated verify loop.\n",
+          "steps": [
+            {
+              "id": "define-use-case-paths",
+              "instruction": "For every user-facing feature, write a use-case navigational path as a numbered list: 1. Starting URL and initial state 2. Each user action (click, fill, submit, navigate) in order 3. Expected URL and visible DOM elements after each action 4. Terminal state (e.g., \"success toast visible, redirect to /dashboard\") Store in docs/use-cases/{feature}.md. Minimum one path per route group.\n",
+              "contract": "docs/use-cases/ directory exists with one file per feature. Each file has a numbered step list with URL, action, and assertion per step.\n",
+              "passCriterion": "File count in docs/use-cases/ ≥ number of route groups",
+              "tools": [
+                "filesystem"
+              ]
+            },
+            {
+              "id": "define-visual-snapshots",
+              "instruction": "For every major page state (empty state, loaded state, error state), define a visual expectation in plain English that Claude Vision can assert against a screenshot: e.g., \"The navbar shows the user avatar. The feed contains at least one article card. The sidebar is absent on mobile viewport.\" Store expectations in docs/visual-contracts/{page}.md.\n",
+              "contract": "docs/visual-contracts/ exists. Each file lists named states with prose visual expectations that are unambiguous.\n",
+              "passCriterion": "File count in docs/visual-contracts/ ≥ number of pages",
+              "tools": [
+                "filesystem"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "execution",
+          "title": "Run Playwright Paths + Claude Vision Assertions",
+          "rationale": "Playwright drives the browser headlessly and captures screenshots at each checkpoint. Claude Vision asserts the screenshot against the visual contract — this is the only technique that catches layout breakage, missing elements, and wrong copy in one pass.\n",
+          "steps": [
+            {
+              "id": "run-playwright-navigation",
+              "instruction": "For each use-case path in docs/use-cases/, write a Playwright test that: 1. Navigates to the starting URL 2. Executes each action in the numbered list 3. Takes a screenshot after every state transition 4. Asserts on DOM elements cited in the contract (getByRole, getByText, toBeVisible) Run with `npx playwright test` in headless mode.\n",
+              "contract": "Playwright test file exists per use-case. All DOM assertions in the contract are expressed as Playwright locators. Test run exits 0.\n",
+              "passCriterion": "playwright test exits 0; 0 failing tests",
+              "tools": [
+                "npx playwright test",
+                "npx playwright codegen"
+              ]
+            },
+            {
+              "id": "assert-screenshots-with-vision",
+              "instruction": "For each screenshot taken by Playwright, call Claude Vision with: - The screenshot file path - The visual contract from docs/visual-contracts/{page}.md for that state - The prompt: \"Assert this screenshot against the following visual contract.\n  List every contract item that FAILS. If all items pass, respond: PASS.\"\nRecord the response. Any response other than PASS is a failure.\n",
+              "contract": "Every screenshot has a corresponding vision assertion result. All results are PASS for the final verify loop iteration.\n",
+              "passCriterion": "All vision assertion results = PASS",
+              "tools": [
+                "claude --vision",
+                "anthropic vision API",
+                "openai vision API"
+              ],
+              "requiresHumanReview": true
+            },
+            {
+              "id": "run-accessibility-check",
+              "instruction": "Run axe-core or @axe-core/playwright on every page visited. Zero critical or serious violations are allowed. Document all moderate violations for backlog.\n",
+              "contract": "0 critical or serious axe violations on any page",
+              "passCriterion": "critical + serious violation count = 0 across all pages",
+              "tools": [
+                "@axe-core/playwright",
+                "axe-core"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Persist Screenshots, Vision Results, and Traces",
+          "rationale": "Screenshots and vision assertion results are the ground truth for behavioral verification. They must be persisted so regressions are detectable across Playwright test runs, CI runs, and GS loop passes.\n",
+          "steps": [
+            {
+              "id": "persist-playwright-report",
+              "instruction": "Save Playwright HTML report to test-results/playwright/index.html. Save all screenshots to test-results/playwright/screenshots/{test-name}/{step}.png. On failure, save the Playwright trace zip for each failing test.\n",
+              "contract": "test-results/playwright/ exists with report and screenshots",
+              "passCriterion": "test-results/playwright/index.html exists",
+              "tools": [
+                "playwright --reporter=html"
+              ]
+            },
+            {
+              "id": "persist-vision-assertions",
+              "instruction": "Save vision-assertions.json to test-results/vision-assertions.json. Summary: total assertions, pass count, fail count, list of failed contracts. If any assertion fails, the FAIL details become the fix prompt input for next pass.\n",
+              "contract": "vision-assertions.json exists with integer pass and fail counts",
+              "passCriterion": "File parses; failed count = 0 for strategy to be complete",
+              "tools": [
+                "jq",
+                "node"
+              ]
+            }
+          ]
+        }
+      ],
+      "hookCount": 2,
+      "hooks": [
+        {
+          "id": "pre-commit-i18n.sh",
+          "trigger": "pre-commit"
+        },
+        {
+          "id": "pre-commit-a11y.sh",
+          "trigger": "pre-commit"
+        }
+      ]
+    },
+    {
+      "tag": "WEB-STATIC",
+      "instructionBlockCount": 5,
+      "instructionBlocks": [
+        {
+          "id": "static-site-architecture",
+          "tier": "recommended",
+          "title": "Static Site Architecture"
+        },
+        {
+          "id": "asset-optimization",
+          "tier": "recommended",
+          "title": "Asset Optimization"
+        },
+        {
+          "id": "html-css-best-practices",
+          "tier": "recommended",
+          "title": "HTML & CSS Best Practices"
+        },
+        {
+          "id": "static-deployment",
+          "tier": "recommended",
+          "title": "Static Site Deployment"
+        },
+        {
+          "id": "web-static-smoke-testing",
+          "tier": "recommended",
+          "title": "Static Site Smoke Testing (Post-Deploy)"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "WEB3",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "smart-contract-patterns",
+          "tier": "recommended",
+          "title": "Smart Contract Design"
+        },
+        {
+          "id": "gas-optimization",
+          "tier": "recommended",
+          "title": "Gas Optimization"
+        },
+        {
+          "id": "wallet-offchain",
+          "tier": "recommended",
+          "title": "Wallet Integration & Off-Chain Patterns"
+        }
+      ],
+      "verificationPhases": [
+        {
+          "id": "contract-definition",
+          "title": "Define ABI Contracts, Invariants, and Gas Bounds",
+          "rationale": "A smart contract is immutable once deployed. Verification contracts must be more rigorous than any other domain: post-deployment bugs cannot be patched, only mitigated. State machine invariants, access control rules, and gas bounds must be written as formal properties before a single line of Solidity is written.\n",
+          "steps": [
+            {
+              "id": "define-abi-contracts",
+              "instruction": "For every public and external function, define: - Preconditions: all require() and revert() conditions with natural-language meaning - Postconditions: what state changes are guaranteed on success - Events emitted: name, indexed fields, non-indexed fields - Reentrancy status: is this function safe to call while executing? Store in docs/abi-contracts.md. One section per function.\n",
+              "contract": "docs/abi-contracts.md exists with one section per public/external function. Every function has preconditions, postconditions, and reentrancy status.\n",
+              "passCriterion": "File exists; every public function in the ABI has a corresponding section",
+              "tools": [
+                "filesystem",
+                "natspec comments in Solidity"
+              ]
+            },
+            {
+              "id": "define-invariants",
+              "instruction": "Write the global invariants that must hold after every transaction: - Conservation: totalSupply == sum(balances) (for token contracts) - Access control: only owner can call admin functions - State machine: cannot transition from COMPLETED to ACTIVE - Economic: protocol fee ≤ 3% of any individual transaction These become the property tests run after every state transition in Foundry.\n",
+              "contract": "docs/invariants.md lists all global invariants with formal notation. Each invariant has: name, condition, and a counterexample that would violate it.\n",
+              "passCriterion": "File exists with ≥1 invariant per contract with counterexample",
+              "tools": [
+                "filesystem"
+              ]
+            },
+            {
+              "id": "define-gas-bounds",
+              "instruction": "For each function, define maximum acceptable gas consumption: - Simple reads: ≤ 30,000 gas - Simple writes (single SSTORE): ≤ 50,000 gas - Complex operations: document the formula and ceiling with justification Store in docs/gas-contracts.md. Include adversarial scenarios: e.g., \"calling batchTransfer with 500 recipients must cost ≤ 5,000,000 gas.\"\n",
+              "contract": "docs/gas-contracts.md with numeric gas ceiling per function and adversarial scenario",
+              "passCriterion": "File exists; every user-callable function has a numeric gas ceiling",
+              "tools": [
+                "filesystem"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "execution",
+          "title": "Foundry Test Suite + Gas Simulation",
+          "rationale": "Foundry runs Solidity tests at EVM speed. Property-based tests (invariant tests) automatically generate counterexamples to global invariants. Forge gas reports provide exact gas consumption per function. Hardhat fork simulation tests behavior under mainnet state to detect integration assumptions.\n",
+          "steps": [
+            {
+              "id": "run-foundry-unit-tests",
+              "instruction": "Write and run Foundry unit tests for every function. Each test covers: - Happy path - Each revert/require condition (expect the revert with the specific error) - Edge cases (zero values, max uint256, zero address, self-transfer) Run with `forge test -vvv`. All tests must pass with 0 failures.\n",
+              "contract": "forge test exits 0. Every function has ≥3 test cases covering happy path, revert conditions, and edge cases. Coverage ≥ 95% branch coverage.\n",
+              "passCriterion": "forge test exits 0; branch coverage ≥ 95%",
+              "tools": [
+                "forge test -vvv",
+                "forge coverage --report lcov"
+              ]
+            },
+            {
+              "id": "run-invariant-property-tests",
+              "instruction": "Write Foundry invariant tests for each invariant in docs/invariants.md. Foundry will call random sequences of functions and assert the invariant holds after each call. Configure minimum 10,000 runs per invariant. Any counterexample found by Foundry is a critical bug.\n",
+              "contract": "One Foundry invariant test function per invariant. All invariants hold after 10,000 random call sequences. Zero counterexamples found.\n",
+              "passCriterion": "forge test exits 0 with no counterexample output",
+              "tools": [
+                "forge test --mt invariant --runs 10000"
+              ]
+            },
+            {
+              "id": "run-gas-simulation",
+              "instruction": "Run `forge snapshot` to record gas usage per test. Compare against the gas ceilings in docs/gas-contracts.md. For adversarial scenarios (max batch size, unbounded loops), run explicit gas-measurement tests using `gasleft()` instrumentation. Any function exceeding its gas ceiling is a FAIL — gas is a security invariant.\n",
+              "contract": "Gas usage per function ≤ ceiling in docs/gas-contracts.md. forge snapshot diff vs. main shows no O(N) growth in single-SLOAD functions.\n",
+              "passCriterion": "All pass fields = true in gas-report.json",
+              "tools": [
+                "forge snapshot",
+                "forge test --gas-report",
+                "gasleft() instrumentation"
+              ]
+            },
+            {
+              "id": "run-fork-simulation",
+              "instruction": "Fork mainnet (or the target network) at a recent block using a public RPC. Deploy the contract to the fork. Run integration scenarios that depend on mainnet state (e.g., oracle prices, existing token balances, DEX liquidity). Assert that stochastic outputs (gas variation under network congestion, slippage under low liquidity) remain within the gas bounds defined.\n",
+              "contract": "Forked tests pass on the mainnet fork. Gas variation under congestion simulation ≤ 15% above baseline.\n",
+              "passCriterion": "forge test exits 0 on fork; gas variance ≤ 15%",
+              "tools": [
+                "forge test --fork-url $MAINNET_RPC",
+                "anvil --fork-url"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "evidence",
+          "title": "Persist Audit Trail and Gas Snapshots",
+          "rationale": "Smart contract audit evidence must be immutable and versioned. Gas snapshots committed to git make regressions visible in pull request diffs.\n",
+          "steps": [
+            {
+              "id": "commit-gas-snapshot",
+              "instruction": "Commit the Foundry gas snapshot (.gas-snapshot) to the repository. In CI, run `forge snapshot --check` which exits non-zero if gas has regressed from the committed snapshot. This makes gas regressions visible in every pull request.\n",
+              "contract": ".gas-snapshot exists in repository root; CI runs forge snapshot --check",
+              "passCriterion": ".gas-snapshot present; forge snapshot --check exits 0 in CI",
+              "tools": [
+                "forge snapshot",
+                "git add .gas-snapshot"
+              ]
+            },
+            {
+              "id": "persist-test-reports",
+              "instruction": "Save to docs/audit/: - forge-test-report.json (all test results) - gas-report.json (function gas vs ceiling) - invariant-results.json (which invariants tested, how many runs) Include git commit SHA and Solidity compiler version in each file.\n",
+              "contract": "docs/audit/ exists with all 3 JSON files after every test run",
+              "passCriterion": "Files exist and parse; commit SHA present",
+              "tools": [
+                "forge test --json",
+                "jq"
+              ]
+            }
+          ]
+        }
+      ],
+      "hookCount": 0,
+      "hooks": []
+    },
+    {
+      "tag": "ZERO-TRUST",
+      "instructionBlockCount": 3,
+      "instructionBlocks": [
+        {
+          "id": "deny-by-default-iam",
+          "tier": "recommended",
+          "title": "Deny-by-Default IAM Policies"
+        },
+        {
+          "id": "explicit-allow-rules",
+          "tier": "recommended",
+          "title": "Explicit Allow Rules & Least Privilege"
+        },
+        {
+          "id": "network-zero-trust",
+          "tier": "optional",
+          "title": "Network-Level Zero Trust"
+        }
+      ],
+      "verificationPhases": [],
+      "hookCount": 0,
+      "hooks": []
+    }
+  ]
+}
